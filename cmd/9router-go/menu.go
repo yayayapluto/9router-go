@@ -85,8 +85,8 @@ func runMenu(cCtx *cli.Context) error {
 		// Every other action comes back here so the next step is one key
 		// away: the menu is a control surface, not a launcher that quits after
 		// a single pick. Failures are reported and the menu redraws instead of
-		// taking the terminal down with them.
-		fmt.Println()
+		// taking the terminal down with them. The redraw supplies its own
+		// leading blank line, so the separator is not printed twice.
 		if err != nil {
 			fmt.Printf("  %s %v\n", st.paint("31", "!"), err)
 		}
