@@ -67,9 +67,19 @@ func (s style) bold(text string) string        { return s.pal.bold(text) }
 func (s style) dim(text string) string         { return s.pal.dim(text) }
 func (s style) green(text string) string       { return s.pal.green(text) }
 
+// outcome is what the last action said: its first line is the news, the rest is
+// detail. Keeping it inside the menu screen is what lets the redraw replace the
+// previous screen instead of scrolling it away.
+type outcome struct {
+	lines  []string
+	failed bool
+}
+
+func (o outcome) empty() bool { return len(o.lines) == 0 }
+
 // menuText renders the menu for the live daemon state.
-func menuText(s style) string {
-	return renderMenu(s, daemon.RunningPID(), daemonURL())
+func menuText(s style, o outcome) string {
+	return renderMenu(s, daemon.RunningPID(), daemonURL(), o)
 }
 
 // item is one menu row: the key to type, what it does, and when to reach for
@@ -83,10 +93,19 @@ type item struct {
 //
 // The pid is a parameter rather than a call so a test can pin the running
 // state without a daemon on the machine.
-func renderMenu(s style, pid int, url string) string {
+func renderMenu(s style, pid int, url string, o outcome) string {
 	var b strings.Builder
-	b.WriteString("\n")
+	// The menu owns the screen when the terminal can clear it: each redraw
+	// replaces the previous screen instead of stacking another copy below it.
+	// A terminal without escape support gets the appended form instead, since
+	// clearing it would need the very sequences it just refused.
+	if s.pal.on {
+		b.WriteString("\x1b[2J\x1b[H")
+	} else {
+		b.WriteString("\n")
+	}
 	writePanel(&b, s, pid, url)
+	writeOutcome(&b, s, o)
 	b.WriteString("\n")
 
 	// Keys stay the numbers the CLI has always used; only their grouping and
@@ -117,6 +136,26 @@ func renderMenu(s style, pid int, url string) string {
 	b.WriteString("  " + s.dim("Enter opens the dashboard. q leaves.") + "\n\n")
 	b.WriteString("  " + s.bold(">") + " ")
 	return b.String()
+}
+
+// writeOutcome prints the last action's report directly under the panel, so the
+// answer to "did it work?" sits in the same screen as the keys that caused it.
+func writeOutcome(b *strings.Builder, s style, o outcome) {
+	if o.empty() {
+		return
+	}
+	b.WriteString("\n")
+	mark := s.green(s.g.mark)
+	if o.failed {
+		mark = s.paint("31", "!")
+	}
+	for i, line := range o.lines {
+		if i == 0 {
+			fmt.Fprintf(b, "  %s %s\n", mark, line)
+			continue
+		}
+		fmt.Fprintf(b, "    %s\n", s.dim(line))
+	}
 }
 
 // writePanel draws identity and live state. The status mark is the menu's only

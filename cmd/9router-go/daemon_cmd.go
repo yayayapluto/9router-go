@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 
@@ -10,6 +12,11 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/daemon"
 )
+
+// menuOut is where the start-menu actions report. The menu captures their
+// output into a status line inside its own screen, while a plain CLI invocation
+// leaves this at stdout and the lines print as before.
+var menuOut io.Writer = os.Stdout
 
 // daemonURL is the address the background daemon is expected to answer on.
 //
@@ -56,16 +63,16 @@ func startDetached(cCtx *cli.Context) error {
 	url := daemonURL()
 	res, err := daemon.Start(url, forwardArgs(cCtx))
 	if err == daemon.ErrAlreadyRunning {
-		fmt.Printf("9router-go already running (pid %d) → %s\n", res.PID, res.URL)
+		fmt.Fprintf(menuOut, "9router-go already running (pid %d) → %s\n", res.PID, res.URL)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Printf("9router-go started in background (pid %d)\n", res.PID)
-	fmt.Printf("  Dashboard: %s\n", res.URL)
-	fmt.Printf("  Log:       %s\n", daemon.LogPath())
-	fmt.Println("  Stop with: 9router-go stop")
+	fmt.Fprintf(menuOut, "9router-go started in background (pid %d)\n", res.PID)
+	fmt.Fprintf(menuOut, "  Dashboard: %s\n", res.URL)
+	fmt.Fprintf(menuOut, "  Log:       %s\n", daemon.LogPath())
+	fmt.Fprintln(menuOut, "  Stop with: 9router-go stop")
 	return nil
 }
 
@@ -76,10 +83,10 @@ func stopDetached(_ *cli.Context) error {
 		return err
 	}
 	if !res.Stopped {
-		fmt.Println("9router-go is not running in background.")
+		fmt.Fprintln(menuOut, "9router-go is not running in background.")
 		return nil
 	}
-	fmt.Printf("9router-go stopped (pid %d).\n", res.PID)
+	fmt.Fprintf(menuOut, "9router-go stopped (pid %d).\n", res.PID)
 	return nil
 }
 
@@ -91,7 +98,7 @@ func restartDetached(cCtx *cli.Context) error {
 		return err
 	}
 	fmt.Printf("9router-go restarted in background (pid %d)\n", res.PID)
-	fmt.Printf("  Dashboard: %s\n", res.URL)
+	fmt.Fprintf(menuOut, "  Dashboard: %s\n", res.URL)
 	fmt.Printf("  Log:       %s\n", daemon.LogPath())
 	return nil
 }
@@ -100,10 +107,10 @@ func restartDetached(cCtx *cli.Context) error {
 func statusDetached(_ *cli.Context) error {
 	pid := daemon.RunningPID()
 	if pid == 0 {
-		fmt.Println("9router-go is not running in background.")
+		fmt.Fprintln(menuOut, "9router-go is not running in background.")
 		return nil
 	}
-	fmt.Printf("9router-go is running in background (pid %d)\n", pid)
+	fmt.Fprintf(menuOut, "9router-go is running in background (pid %d)\n", pid)
 	fmt.Printf("  Dashboard: %s\n", daemonURL())
 	fmt.Printf("  Log:       %s\n", daemon.LogPath())
 	return nil

@@ -65,7 +65,7 @@ func TestTrayBinaryName(t *testing.T) {
 func TestRenderMenuFitsTheWidth(t *testing.T) {
 	for name, g := range map[string]glyphs{"ascii": asciiGlyphs, "box": boxGlyphs} {
 		for _, pid := range []int{0, 4242} {
-			out := renderMenu(style{pal: palette{}, g: g}, pid, "http://127.0.0.1:20130")
+			out := renderMenu(style{pal: palette{}, g: g}, pid, "http://127.0.0.1:20130", outcome{})
 			for _, line := range strings.Split(out, "\n") {
 				if n := visibleLen(line); n > menuWidth {
 					t.Errorf("%s pid=%d: line is %d columns, budget %d: %q", name, pid, n, menuWidth, line)
@@ -79,7 +79,7 @@ func TestRenderMenuFitsTheWidth(t *testing.T) {
 // with the launcher switch. A key that disappears from the render is an action
 // the operator can no longer discover.
 func TestRenderMenuNamesEveryAction(t *testing.T) {
-	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
+	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130", outcome{})
 	for _, want := range []string{
 		"1) Open the dashboard",
 		"2) Run in the background",
@@ -99,11 +99,11 @@ func TestRenderMenuNamesEveryAction(t *testing.T) {
 // TestRenderMenuOnboardingOnlyWhenStopped: the first-run pointer is only true
 // while the server is down. Showing it next to a running pid would be a lie.
 func TestRenderMenuOnboardingOnlyWhenStopped(t *testing.T) {
-	stopped := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
+	stopped := renderMenu(testStyle(), 0, "http://127.0.0.1:20130", outcome{})
 	if !strings.Contains(stopped, "First run") || !strings.Contains(stopped, "stopped") {
 		t.Errorf("stopped menu should offer the first-run pointer:\n%s", stopped)
 	}
-	running := renderMenu(testStyle(), 4242, "http://127.0.0.1:20130")
+	running := renderMenu(testStyle(), 4242, "http://127.0.0.1:20130", outcome{})
 	if strings.Contains(running, "First run") {
 		t.Errorf("running menu must not show the first-run pointer:\n%s", running)
 	}
@@ -115,7 +115,7 @@ func TestRenderMenuOnboardingOnlyWhenStopped(t *testing.T) {
 // TestRenderMenuIsPlainWhenColourIsOff: a redirected or dumb terminal must not
 // receive escape codes, and the same renderer has to stay legible without them.
 func TestRenderMenuIsPlainWhenColourIsOff(t *testing.T) {
-	out := renderMenu(style{pal: palette{on: false}, g: asciiGlyphs}, 4242, "http://127.0.0.1:20130")
+	out := renderMenu(style{pal: palette{on: false}, g: asciiGlyphs}, 4242, "http://127.0.0.1:20130", outcome{})
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("colourless menu contains ANSI escapes:\n%q", out)
 	}
@@ -151,8 +151,38 @@ func TestTrayHintTracksTheBinary(t *testing.T) {
 // blank lines were the visible symptom of the redraw printing its own
 // separator on top of the renderer's.
 func TestRenderMenuHasNoDoubledBlankLines(t *testing.T) {
-	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
+	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130", outcome{})
 	if strings.Contains(out, "\n\n\n") {
 		t.Errorf("menu contains a doubled blank line:\n%q", out)
+	}
+}
+
+// TestRenderMenuClearsTheScreenWhenItCan: the menu owns the screen only when
+// the terminal can clear it. Otherwise each redraw has to append.
+func TestRenderMenuClearsTheScreenWhenItCan(t *testing.T) {
+	colored := renderMenu(style{pal: palette{on: true}, g: boxGlyphs}, 0, "http://127.0.0.1:20130", outcome{})
+	if !strings.HasPrefix(colored, "\x1b[2J\x1b[H") {
+		t.Errorf("colour render does not start with a clear-home sequence: %q", colored[:12])
+	}
+	plain := renderMenu(testStyle(), 0, "http://127.0.0.1:20130", outcome{})
+	if strings.Contains(plain, "\x1b[2J") {
+		t.Errorf("plain render clears the screen it cannot restore")
+	}
+}
+
+// TestRenderMenuShowsTheLastOutcome: the action's report belongs on the redrawn
+// screen, which is what makes a clear-and-redraw safe instead of lossy.
+func TestRenderMenuShowsTheLastOutcome(t *testing.T) {
+	ok := outcome{lines: []string{"9router-go started in background (pid 7)", "Dashboard: http://127.0.0.1:20130"}}
+	out := renderMenu(testStyle(), 7, "http://127.0.0.1:20130", ok)
+	if !strings.Contains(out, "9router-go started in background (pid 7)") {
+		t.Errorf("menu lost the action's first line:\n%s", out)
+	}
+	if !strings.Contains(out, "Dashboard: http://127.0.0.1:20130") {
+		t.Errorf("menu lost the action's detail line:\n%s", out)
+	}
+	bad := renderMenu(testStyle(), 0, "http://127.0.0.1:20130", outcome{lines: []string{"boom"}, failed: true})
+	if !strings.Contains(bad, "! boom") {
+		t.Errorf("failure is not marked:\n%s", bad)
 	}
 }
