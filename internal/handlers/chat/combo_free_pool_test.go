@@ -127,3 +127,27 @@ func TestFreePoolParksRateLimitedModel(t *testing.T) {
 		t.Errorf("parked model received another request: %d total", got)
 	}
 }
+
+// TestFreePoolParkKeyIgnoresAlias proves parking and ordering agree on the
+// provider spelling: a combo member is written with the alias ("bzl/…") while
+// the failure loop parks the canonical id, and the parked member must still be
+// skipped. Without the canonical key the pool dialled it again on every turn.
+func TestFreePoolParkKeyIgnoresAlias(t *testing.T) {
+	// "oa" is openai's alias, so the member is spelled differently from the
+	// connection's provider id — exactly the shape the free combo writes.
+	h, primaryHits, fallbackHits, teardown := freePoolFixture(t, []string{"oa/gpt-4o", "deepseek/deepseek-chat"})
+	defer teardown()
+
+	freepool.Default().Park("openai", "gpt-4o", time.Minute)
+
+	rec := postCombo(t, h)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := fallbackHits.Load(); got != 1 {
+		t.Errorf("fallback must serve the turn, got %d hits", got)
+	}
+	if got := primaryHits.Load(); got != 0 {
+		t.Errorf("parked alias member was dialled: %d hits", got)
+	}
+}

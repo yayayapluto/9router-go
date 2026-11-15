@@ -344,6 +344,12 @@ func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Re
 // replaces it to keep the endpoint offline.
 var freeCatalogFetch = providers.FetchFreeModels
 
+// allFreeKeyless marks the keyless upstreams whose whole catalogue is the free
+// lane. Every other no-auth provider mixes paid ids into the same catalogue
+// (opencode serves gpt-5.5 next to `*-free`), so those contribute only the
+// free-suffixed ids — the same rule connected providers get.
+var allFreeKeyless = map[string]bool{"ovh": true, "kilo-free": true, "llm7-free": true}
+
 // freeTierComboModels returns "alias/model" ids for every free model the user
 // can actually reach: the free-tier registry models of providers with a
 // connection, plus every keyless provider (no connection row exists for those,
@@ -404,6 +410,9 @@ func (h *DashboardHandler) freeTierComboModels(ctx context.Context) ([]string, e
 			modelIDs = providers.GetProviderModels(providerID)
 		}
 		for _, modelID := range modelIDs {
+			if !allFreeKeyless[providerID] && !providers.IsFreeTierModel(modelID) {
+				continue
+			}
 			add(providerID, modelID)
 		}
 	}

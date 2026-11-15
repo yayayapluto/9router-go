@@ -455,7 +455,10 @@ func (h *ChatHandler) orderFreePool(models []string, body []byte) []string {
 		if !ok || provider == "" || model == "" {
 			continue
 		}
-		entries = append(entries, freepool.Entry{Provider: provider, Model: model})
+		// Combo members are written with the provider alias ("oc/…"), while the
+		// failure loop parks under the canonical id. Parking and ordering must
+		// agree on one spelling or a parked model is dialled again.
+		entries = append(entries, freepool.Entry{Provider: providers.ResolveAlias(provider), Model: model})
 	}
 	if len(entries) <= 1 {
 		return models
@@ -2029,7 +2032,7 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	// never applies to them. Park the model in the pool store for every error
 	// that says "not now", independent of whether a row exists.
 	if d := freeParkDuration(ue); d > 0 {
-		freepool.Default().Park(provider, model, d)
+		freepool.Default().Park(providers.ResolveAlias(provider), model, d)
 	}
 	if connID == "" {
 		return
