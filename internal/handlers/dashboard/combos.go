@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"9router/proxy/internal/combos/smart"
 	"9router/proxy/internal/db"
@@ -285,11 +286,12 @@ const autoFreeComboKind = "auto-free"
 const AutoFreeComboID = "auto-free-tier"
 
 // HandleAutoFreeCombo handles POST /api/combos/auto-free.
-// (Re)builds the free-tier combo from registry models of providers the user
-// actually has a connection for, so the combo never references unreachable
-// providers. The write is an upsert on AutoFreeComboID, so rebuilding an
-// edited combo replaces the edits — which is why the rebuild is an explicit
-// button rather than something that happens on connection changes.
+// (Re)builds the free-tier combo from the free models of providers the user
+// has a connection for plus every keyless provider, so the combo never
+// references unreachable providers and never needs a key it does not have. The
+// write is an upsert on AutoFreeComboID, so rebuilding an edited combo replaces
+// the edits — which is why the rebuild is an explicit button rather than
+// something that happens on connection changes.
 func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Request) {
 	models, err := h.freeTierComboModels(r.Context())
 	if err != nil {
@@ -315,11 +317,18 @@ func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if existing == nil {
-		if err := h.Repo.CreateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback", ""); err != nil {
+		if err := h.Repo.CreateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "free", ""); err != nil {
 			handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-	} else if err := h.Repo.UpdateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "fallback", ""); err != nil {
+	} else if err := h.Repo.UpdateCombo(AutoFreeComboID, name, autoFreeComboKind, string(modelsJSON), "free", ""); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The strategy is not a combos column: CreateCombo/UpdateCombo take one, but
+	// no such column exists, and resolveComboStrategy reads the per-combo
+	// override out of settings keyed by combo name.
+	if err := h.Repo.SetComboStrategy(name, db.ComboStrategy{Strategy: "free"}); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -331,9 +340,15 @@ func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// freeTierComboModels returns "alias/model" ids for every free-tier registry
-// model of providers with at least one connection, ordered by provider alias
-// then model id so regenerating yields a stable, diffable list.
+// freeCatalogFetch is the live catalogue reader the rebuild uses. A test
+// replaces it to keep the endpoint offline.
+var freeCatalogFetch = providers.FetchFreeModels
+
+// freeTierComboModels returns "alias/model" ids for every free model the user
+// can actually reach: the free-tier registry models of providers with a
+// connection, plus every keyless provider (no connection row exists for those,
+// and they are free by construction). Duplicates are dropped and the list is
+// sorted by alias then model id so regenerating yields a stable, diffable list.
 //
 // The free-tier marker is a naming convention, not a service kind: ":free" /
 // "/free" / "-free" also lands on embedding, image, tts and stt models
@@ -341,25 +356,59 @@ func (h *DashboardHandler) HandleAutoFreeCombo(w http.ResponseWriter, r *http.Re
 // registry carries the real kind, so a combo that cannot serve a chat turn
 // never enters the fallback chain — same gate usableModelFamilies applies to
 // the auto-family combos.
+
 func (h *DashboardHandler) freeTierComboModels(ctx context.Context) ([]string, error) {
 	active, err := h.Repo.GetConnectedProviders(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("freeTierComboModels: list providers: %w", err)
 	}
 
+	seen := make(map[string]bool)
 	var out []string
+	add := func(providerID, modelID string) {
+		if kind := providers.GetProviderModelKind(providerID, modelID); kind != "" && kind != "llm" {
+			return
+		}
+		entry := providers.GetProviderAlias(providerID) + "/" + modelID
+		if seen[entry] {
+			return
+		}
+		seen[entry] = true
+		out = append(out, entry)
+	}
+
+	// 1. Connected providers keep the free-tier suffix rule: a paid key may
+	//    also serve paid models, and the combo must not silently bill them.
 	for providerID := range active {
 		for _, modelID := range providers.GetProviderModels(providerID) {
-			if !providers.IsFreeTierModel(modelID) {
-				continue
+			if providers.IsFreeTierModel(modelID) {
+				add(providerID, modelID)
 			}
-			if kind := providers.GetProviderModelKind(providerID, modelID); kind != "" && kind != "llm" {
-				continue
-			}
-			out = append(out, providers.GetProviderAlias(providerID)+"/"+modelID)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+
+	// 2. Keyless providers have no connection row, so they never appear in
+	//    `active`. They are free by construction: take the live catalogue, and
+	//    the static registry list when the fetch fails.
+	fetchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	for providerID, meta := range providers.ProviderRegistry {
+		if !meta.NoAuth || meta.Hidden {
+			continue
+		}
+		if _, connected := active[providerID]; connected {
+			continue
+		}
+		modelIDs := freeCatalogFetch(fetchCtx, http.DefaultClient, providerID)
+		if len(modelIDs) == 0 {
+			modelIDs = providers.GetProviderModels(providerID)
+		}
+		for _, modelID := range modelIDs {
+			add(providerID, modelID)
+		}
+	}
+
+	sort.Strings(out)
 	return out, nil
 }
 
