@@ -552,6 +552,27 @@ var KnownProviders = map[string]ProviderConfig{
 		SystemoneURL:  "https://opencode.ai/zen/v1/systemone",
 		StaticHeaders: map[string]string{"x-opencode-client": "cli", "User-Agent": "opencode/latest/2.1.4/cli"},
 	},
+	"ovh": {
+		BaseURL:    "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
+	},
+	"kilo-free": {
+		BaseURL:    "https://api.kilo.ai/api/gateway/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
+	},
+	"llm7-free": {
+		BaseURL:    "https://api.llm7.io/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
+		// LLM7 answers only to the literal anonymous token; NoAuth alone sends no
+		// Authorization header at all (internal/proxy/openai.go:17).
+		StaticHeaders: map[string]string{"Authorization": "Bearer unused"},
+	},
 	// Pay-as-you-go lane (upstream open-sse/providers/registry/opencode-zen.js):
 	// a key is required, and the same key answers /chat/completions, /messages
 	// and /responses. NoAuth stays false so a connection with no key is refused
