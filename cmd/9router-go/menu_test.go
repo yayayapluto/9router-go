@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// testStyle is a monochrome ASCII terminal: the renderer's lowest common
+// denominator, so layout assertions do not depend on the machine's console.
+func testStyle() style { return style{pal: palette{}, g: asciiGlyphs} }
+
 func TestParseChoice(t *testing.T) {
 	cases := map[string]string{
 		"":        "1", // Enter takes the default
@@ -75,7 +79,7 @@ func TestRenderMenuFitsTheWidth(t *testing.T) {
 // with the launcher switch. A key that disappears from the render is an action
 // the operator can no longer discover.
 func TestRenderMenuNamesEveryAction(t *testing.T) {
-	out := renderMenu(style{g: asciiGlyphs}, 0, "http://127.0.0.1:20130")
+	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
 	for _, want := range []string{
 		"1) Open the dashboard",
 		"2) Run in the background",
@@ -95,11 +99,11 @@ func TestRenderMenuNamesEveryAction(t *testing.T) {
 // TestRenderMenuOnboardingOnlyWhenStopped: the first-run pointer is only true
 // while the server is down. Showing it next to a running pid would be a lie.
 func TestRenderMenuOnboardingOnlyWhenStopped(t *testing.T) {
-	stopped := renderMenu(style{}, 0, "http://127.0.0.1:20130")
+	stopped := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
 	if !strings.Contains(stopped, "First run") || !strings.Contains(stopped, "stopped") {
 		t.Errorf("stopped menu should offer the first-run pointer:\n%s", stopped)
 	}
-	running := renderMenu(style{}, 4242, "http://127.0.0.1:20130")
+	running := renderMenu(testStyle(), 4242, "http://127.0.0.1:20130")
 	if strings.Contains(running, "First run") {
 		t.Errorf("running menu must not show the first-run pointer:\n%s", running)
 	}

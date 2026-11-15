@@ -35,10 +35,14 @@ func stdinIsTerminal() bool {
 // interface picker the Node CLI shows instead of silently booting a server.
 func runMenu(cCtx *cli.Context) error {
 	in := bufio.NewReader(os.Stdin)
+	st := newStyle()
+	if st.restore != nil {
+		defer st.restore()
+	}
 	first := true
 	var err error
 	for {
-		fmt.Print(menuText())
+		fmt.Print(menuText(st))
 		line, ok := readChoice(in)
 		if !ok {
 			// The read ended at EOF before a byte arrived, so there is nobody
@@ -59,7 +63,7 @@ func runMenu(cCtx *cli.Context) error {
 		case "":
 			// Not one of the keys: say so and redraw. Losing the menu to a
 			// typo is the behaviour this loop exists to avoid.
-			fmt.Printf("  %s not an option: type 0-6, q to leave\n", newStyle().paint("31", "!"))
+			fmt.Printf("  %s not an option: type 0-6, q to leave\n", st.paint("31", "!"))
 			continue
 		case "0":
 			return nil
@@ -84,7 +88,7 @@ func runMenu(cCtx *cli.Context) error {
 		// taking the terminal down with them.
 		fmt.Println()
 		if err != nil {
-			fmt.Printf("  %s %v\n", newStyle().paint("31", "!"), err)
+			fmt.Printf("  %s %v\n", st.paint("31", "!"), err)
 		}
 	}
 }

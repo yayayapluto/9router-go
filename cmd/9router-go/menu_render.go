@@ -49,14 +49,17 @@ func (p palette) dim(s string) string   { return p.paint("2", s) }
 func (p palette) green(s string) string { return p.paint("32", s) }
 
 // style is everything the renderer needs to know about the terminal it draws
-// into.
+// into. restore undoes any console state newStyle had to change; the menu defers
+// it so the shell gets its console back.
 type style struct {
-	pal palette
-	g   glyphs
+	pal     palette
+	g       glyphs
+	restore func()
 }
 
 func newStyle() style {
-	return style{pal: palette{colorAllowed()}, g: consoleGlyphs()}
+	color, restore := prepareConsole(os.Stdout)
+	return style{pal: palette{colorAllowed(color)}, g: consoleGlyphs(), restore: restore}
 }
 
 func (s style) paint(code, text string) string { return s.pal.paint(code, text) }
@@ -65,8 +68,8 @@ func (s style) dim(text string) string         { return s.pal.dim(text) }
 func (s style) green(text string) string       { return s.pal.green(text) }
 
 // menuText renders the menu for the live daemon state.
-func menuText() string {
-	return renderMenu(newStyle(), daemon.RunningPID(), daemonURL())
+func menuText(s style) string {
+	return renderMenu(s, daemon.RunningPID(), daemonURL())
 }
 
 // item is one menu row: the key to type, what it does, and when to reach for

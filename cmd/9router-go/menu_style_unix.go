@@ -7,15 +7,15 @@ import (
 	"strings"
 )
 
-// enableColor reports whether f is a terminal. A character device is the same
-// test the stdin probe uses; nothing more is needed off Windows, where ANSI is
-// the default and TERM/NO_COLOR already had their say.
-func enableColor(f *os.File) bool {
+// prepareConsole reports whether f is a terminal. A character device is the
+// same test the stdin probe uses; nothing more is needed off Windows, where
+// ANSI is the default and no console state has to be restored.
+func prepareConsole(f *os.File) (bool, func()) {
 	fi, err := f.Stat()
 	if err != nil {
-		return false
+		return false, nil
 	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return fi.Mode()&os.ModeCharDevice != 0, nil
 }
 
 // consoleGlyphs checks the locale for UTF-8 before trusting box drawing.
