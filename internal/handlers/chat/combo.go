@@ -1305,6 +1305,10 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						errors.As(fwdErr, &refusedErr)
 						if refusedErr != nil {
 							lastErr = refusedErr
+							// A provider at its capacity is exactly the "not
+							// now" answer the free pool parks on; without this
+							// the exhausted free lane is redialled every turn.
+							h.parkFreeModel(modelInfo.Provider, modelInfo.Model, refusedErr)
 						}
 						if isKnownNoAuth {
 							break
@@ -1798,6 +1802,10 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						errors.As(fwdErr, &refusedErr)
 						if refusedErr != nil {
 							lastErr = refusedErr
+							// A provider at its capacity is exactly the "not
+							// now" answer the free pool parks on; without this
+							// the exhausted free lane is redialled every turn.
+							h.parkFreeModel(modelInfo.Provider, modelInfo.Model, refusedErr)
 						}
 						if isKnownNoAuth {
 							break
@@ -1986,6 +1994,15 @@ func entryExcludes(excludeIDs, tried []string) []string {
 	return append(slices.Clip(excludeIDs), tried...)
 }
 
+// parkFreeModel records the wait the free pool owes after this failure. The
+// provider id is canonicalised because combo members are written with the
+// alias and the orderer must look the entry up under the same key.
+func (h *ChatHandler) parkFreeModel(provider, model string, ue *upstreamError) {
+	if d := freeParkDuration(ue); d > 0 {
+		freepool.Default().Park(providers.ResolveAlias(provider), model, d)
+	}
+}
+
 // freeParkDuration maps a retryable upstream failure onto how long the free
 // pool should skip that model. 401/403 is an egress/policy refusal and gets 30
 // minutes; 429 waits what the upstream announced (or a minute), clamped to
@@ -2031,9 +2048,7 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 	// Keyless providers have no connection row, so the per-connection lock above
 	// never applies to them. Park the model in the pool store for every error
 	// that says "not now", independent of whether a row exists.
-	if d := freeParkDuration(ue); d > 0 {
-		freepool.Default().Park(providers.ResolveAlias(provider), model, d)
-	}
+	h.parkFreeModel(provider, model, ue)
 	if connID == "" {
 		return
 	}
