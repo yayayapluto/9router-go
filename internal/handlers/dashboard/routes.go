@@ -118,6 +118,9 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/provider-nodes", h.HandleCreateProviderNode)
 		r.Put("/provider-nodes/{id}", h.HandleUpdateProviderNode)
 		r.Post("/provider-nodes/validate", h.HandleValidateProviderNode)
+		// Node-level catalogue: a keyless node has no connection row to ask, yet
+		// its /models is exactly what the import button needs.
+		r.Get("/provider-nodes/{id}/models", h.HandleGetProviderNodeModels)
 		r.Delete("/provider-nodes/{id}", h.HandleDeleteProviderNode)
 		// Per-node capacity limits (docs/provider-limits-plan.md). The GET list
 		// above carries them too; these two write the policy and lift a spent

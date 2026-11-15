@@ -126,4 +126,8 @@ that stopped working.
   registration, database aliases, custom node prefixes, or standard
   `provider/model` wire syntax — never by ad-hoc string inspection.
 - **The Import from /models button** only appears for providers that genuinely
-  support dynamic catalog discovery upstream.
+  support dynamic catalog discovery upstream. On a custom compatible node it
+  works with no connection row: the catalogue is read from the node's own base
+  URL (`GET /api/provider-nodes/{id}/models`), which is the same URL the chat
+  path derives. A refused upstream reports `Connection refused - provider node
+  offline or unreachable` rather than a raw dial error.

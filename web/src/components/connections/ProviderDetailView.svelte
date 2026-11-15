@@ -507,6 +507,22 @@
   let compatibleTestAllRunning = $state(false)
   let isRemovingCompatibleModels = $state(false)
   let canImportCompatible = $derived(providerConnections.some((c) => c.isActive !== 0))
+  // A keyless node has no connection row at all. Its own base URL still serves
+  // /models, so the import is available as soon as the node exists.
+  let canImportModels = $derived(canImportCompatible || !!selectedNode?.id)
+
+  // fetchCompatibleCatalogue asks the connection when there is one, and the node
+  // otherwise; both resolve to the same upstream /models.
+  async function fetchCompatibleCatalogue(): Promise<
+    Array<{ id?: string; name?: string; model?: string } | string>
+  > {
+    if (canImportCompatible) {
+      const active = providerConnections.find((c) => c.isActive !== 0)
+      if (active) return (await api.getConnectionModels(active.id)).models || []
+    }
+    if (selectedNode?.id) return (await api.getProviderNodeModels(selectedNode.id)).models || []
+    return []
+  }
 
   // Settings & Strategies
   let settings = $state<Settings | null>(null)
@@ -2832,12 +2848,9 @@
 
   async function handleImportCompatibleModels(freeOnly = false) {
     if (isImportingCompatibleModels) return
-    const active = providerConnections.find((c) => c.isActive !== 0)
-    if (!active) return
     isImportingCompatibleModels = true
     try {
-      const res = await api.getConnectionModels(active.id)
-      const models = res.models || []
+      const models = await fetchCompatibleCatalogue()
       if (models.length === 0) {
         alert('No models returned from /models.')
         return
@@ -2885,15 +2898,14 @@
 
   async function handleImportLiveCatalogModels() {
     if (isImportingLiveCatalogModels) return
-    const active = providerConnections.find((c) => c.isActive !== 0)
-    if (!active) {
-      alert('Add an active connection first to fetch models.')
+    const hasSource = canImportCompatible || !!selectedNode?.id
+    if (!hasSource) {
+      alert('Add a connection or a provider node first to fetch models.')
       return
     }
     isImportingLiveCatalogModels = true
     try {
-      const res = await api.getConnectionModels(active.id)
-      const models = res.models || []
+      const models = await fetchCompatibleCatalogue()
       if (models.length === 0) {
         alert('No models returned from /models.')
         return
@@ -4467,7 +4479,7 @@
           <button
             type="button"
             onclick={() => handleImportCompatibleModels(false)}
-            disabled={!canImportCompatible || isImportingCompatibleModels}
+            disabled={!canImportModels || isImportingCompatibleModels}
             title="Fetch this endpoint's /models and add everything it lists"
             class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-border bg-surface-2 px-3 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
           >
@@ -4477,7 +4489,7 @@
           <button
             type="button"
             onclick={() => handleImportCompatibleModels(true)}
-            disabled={!canImportCompatible || isImportingCompatibleModels}
+            disabled={!canImportModels || isImportingCompatibleModels}
             title="Same as import, but skip anything that is not on the provider's free tier"
             class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-border bg-surface-2 px-3 text-xs font-medium text-text-main transition-colors hover:bg-surface-3 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
           >
@@ -4517,8 +4529,8 @@
         </div>
         <p class="text-xs text-text-muted">Test all sends a real completion per model and consumes account quota.</p>
         <p class="text-xs text-text-muted">Remove all deletes this node's imported models and the aliases pointing at them; models that ship with the build stay.</p>
-        {#if !canImportCompatible}
-          <p class="text-xs text-text-muted">Add a connection to enable importing models.</p>
+        {#if !canImportModels}
+          <p class="text-xs text-text-muted">Add a connection or a provider node to enable importing models.</p>
         {/if}
       </div>
       <!-- Toolbar: search / filter / batch selection over the rows below.
