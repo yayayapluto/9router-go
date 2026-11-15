@@ -58,7 +58,8 @@ export const COMBO_STRATEGIES = [
   { value: 'smart', label: 'Smart Router — System One' },
   { value: 'fusion', label: 'Fusion — panel + judge' },
   { value: 'tokenmaxxing', label: 'Tokenmaxxing — quota-aware' },
-  { value: 'cascade', label: 'Cascade — cheapest first' }
+  { value: 'cascade', label: 'Cascade — cheapest first' },
+  { value: 'free', label: 'Free pool — keyless, capability-matched' }
 ] as const
 
 /**
