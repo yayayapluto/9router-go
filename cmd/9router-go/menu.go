@@ -18,7 +18,6 @@ import (
 	"9router/proxy/internal/config"
 	"9router/proxy/internal/daemon"
 	"9router/proxy/internal/proc"
-	"9router/proxy/internal/updater"
 )
 
 // stdinIsTerminal reports whether the bare invocation has a human at the
@@ -37,6 +36,7 @@ func stdinIsTerminal() bool {
 func runMenu(cCtx *cli.Context) error {
 	in := bufio.NewReader(os.Stdin)
 	first := true
+	var err error
 	for {
 		fmt.Print(menuText())
 		line, ok := readChoice(in)
@@ -56,47 +56,37 @@ func runMenu(cCtx *cli.Context) error {
 		first = false
 		choice := parseChoice(line)
 		switch choice {
-		case "1":
-			return openDashboard(cCtx)
-		case "2":
-			return startDetached(cCtx)
-		case "3":
-			return runServer(cCtx)
-		case "4":
-			if err := stopDetached(cCtx); err != nil {
-				return err
-			}
-		case "5":
-			if err := statusDetached(cCtx); err != nil {
-				return err
-			}
-		case "6":
-			return startTray(cCtx)
-		default:
+		case "":
+			// Not one of the keys: say so and redraw. Losing the menu to a
+			// typo is the behaviour this loop exists to avoid.
+			fmt.Printf("  %s not an option: type 0-6, q to leave\n", newStyle().paint("31", "!"))
+			continue
+		case "0":
 			return nil
+		case "3":
+			// The foreground server owns this terminal until it stops, so this
+			// is the one action that does not come back to the menu.
+			return runServer(cCtx)
+		case "1":
+			err = openDashboard(cCtx)
+		case "2":
+			err = startDetached(cCtx)
+		case "4":
+			err = stopDetached(cCtx)
+		case "5":
+			err = statusDetached(cCtx)
+		case "6":
+			err = startTray(cCtx)
+		}
+		// Every other action comes back here so the next step is one key
+		// away: the menu is a control surface, not a launcher that quits after
+		// a single pick. Failures are reported and the menu redraws instead of
+		// taking the terminal down with them.
+		fmt.Println()
+		if err != nil {
+			fmt.Printf("  %s %v\n", newStyle().paint("31", "!"), err)
 		}
 	}
-}
-
-// menuText renders the header plus the numbered items, with the live daemon
-// state in front of the choice so the pick is informed.
-func menuText() string {
-	state := "stopped"
-	if pid := daemon.RunningPID(); pid != 0 {
-		state = fmt.Sprintf("\x1b[32mrunning (pid %d)\x1b[0m", pid)
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n  %s v%s (%s/%s)\n", binaryName(), updater.CurrentVersion, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&b, "  Server: %s  [%s]\n\n", daemonURL(), state)
-	b.WriteString("  1) Open dashboard (Web UI)\n")
-	b.WriteString("  2) Start in background\n")
-	b.WriteString("  3) Start in this terminal (foreground)\n")
-	b.WriteString("  4) Stop background server\n")
-	b.WriteString("  5) Show status\n")
-	b.WriteString("  6) Run in background with tray icon (frees the terminal)\n")
-	b.WriteString("  0) Exit\n\n")
-	b.WriteString("  Choose [1]: ")
-	return b.String()
 }
 
 // readChoice blocks for one line. ok is false when the stream ended without
@@ -114,8 +104,12 @@ func readChoice(in *bufio.Reader) (line string, ok bool) {
 
 // parseChoice maps the typed line to a menu key. Enter alone takes the
 // default (open dashboard); anything unrecognised exits rather than looping.
+// parseChoice maps one typed line to an action key. "" means "not an option":
+// the caller re-prompts instead of quitting, so a fat finger does not close the
+// menu. Escape sequences from arrow or function keys are stripped first, since
+// a terminal delivers those bytes ahead of whatever the operator meant to type.
 func parseChoice(line string) string {
-	s := strings.TrimSpace(line)
+	s := strings.TrimSpace(stripControls(line))
 	if s == "" {
 		return "1"
 	}
@@ -125,7 +119,42 @@ func parseChoice(line string) string {
 	case "q", "Q", "exit":
 		return "0"
 	}
-	return "0"
+	return ""
+}
+
+// stripControls drops escape sequences and control bytes, keeping printable
+// input only.
+func stripControls(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			i++
+			if i < len(s) && s[i] == '[' {
+				i++
+				for i < len(s) && (s[i] < 'A' || s[i] > 'Z') && (s[i] < 'a' || s[i] > 'z') {
+					i++
+				}
+				if i < len(s) {
+					i++
+				}
+				continue
+			}
+			// A bare ESC followed by a letter is a function-key sequence prefix.
+			for i < len(s) && s[i] >= 0x20 && s[i] < 0x7f && !isChoiceByte(s[i]) {
+				i++
+			}
+			continue
+		}
+		if s[i] >= 0x20 && s[i] != 0x7f {
+			b.WriteByte(s[i])
+		}
+		i++
+	}
+	return b.String()
+}
+
+func isChoiceByte(c byte) bool {
+	return c >= '0' && c <= '9' || c == 'q' || c == 'Q' || c == ' ' || c == '\t'
 }
 
 // startTray hands the tray to its own binary and returns, so the terminal is
@@ -139,16 +168,19 @@ func parseChoice(line string) string {
 // Only the sibling binary is tried: a PATH lookup could pick up a different
 // install's tray, which would then talk to a gateway that is not this one.
 func startTray(cCtx *cli.Context) error {
-	self, err := proc.SelfExecutable()
-	if err != nil {
-		return fmt.Errorf("tray: locate this binary: %w", err)
-	}
-	exe := filepath.Join(filepath.Dir(self), trayBinaryName())
-	if runtime.GOOS == "windows" {
-		exe += ".exe"
+	exe := trayBinaryPath()
+	if exe == "" {
+		self, err := proc.SelfExecutable()
+		if err != nil {
+			return fmt.Errorf("tray: locate this binary: %w", err)
+		}
+		exe = filepath.Join(filepath.Dir(self), trayBinaryName())
+		if runtime.GOOS == "windows" {
+			exe += ".exe"
+		}
 	}
 	if _, err := os.Stat(exe); err != nil {
-		fmt.Printf("tray companion %s not found next to %s; falling back to background server...\n", filepath.Base(exe), filepath.Base(self))
+		fmt.Printf("tray companion %s not found; falling back to the background server.\n", filepath.Base(exe))
 		return startDetached(cCtx)
 	}
 	// CommandContext with a context that is never cancelled, not a deadline:
@@ -170,6 +202,20 @@ func startTray(cCtx *cli.Context) error {
 // `opencode-go` install looks for `opencode-go-tray`.
 func trayBinaryName() string {
 	return binaryName() + "-tray"
+}
+
+// trayBinaryPath is where the sibling tray binary would live, or "" when this
+// binary cannot locate itself. The menu asks before promising a tray.
+func trayBinaryPath() string {
+	self, err := proc.SelfExecutable()
+	if err != nil {
+		return ""
+	}
+	exe := filepath.Join(filepath.Dir(self), trayBinaryName())
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
+	}
+	return exe
 }
 
 // openDashboard makes sure the daemon is up, then hands the dashboard URL to
