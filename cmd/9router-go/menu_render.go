@@ -107,7 +107,6 @@ func renderMenu(s style, pid int, url string) string {
 		{"6", "Background with tray icon", trayHint()},
 	})
 
-	b.WriteString("\n")
 	if pid == 0 {
 		// Onboarding, not decoration: this is the one state where the next
 		// move is not obvious, and the dashboard is where a provider is added.

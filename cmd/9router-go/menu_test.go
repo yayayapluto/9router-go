@@ -146,3 +146,13 @@ func TestTrayHintTracksTheBinary(t *testing.T) {
 		t.Errorf("absent tray binary should be reported, got %q", hint)
 	}
 }
+
+// TestRenderMenuHasNoDoubledBlankLines: separators are counted once. Stacked
+// blank lines were the visible symptom of the redraw printing its own
+// separator on top of the renderer's.
+func TestRenderMenuHasNoDoubledBlankLines(t *testing.T) {
+	out := renderMenu(testStyle(), 0, "http://127.0.0.1:20130")
+	if strings.Contains(out, "\n\n\n") {
+		t.Errorf("menu contains a doubled blank line:\n%q", out)
+	}
+}
