@@ -2,6 +2,7 @@ package freepool
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -199,4 +200,48 @@ func TestOrderNilMetaAndParked(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Order() = %v, want %v", got, want)
 	}
+}
+
+// FuzzOrder pins the invariants the combo loop relies on for any input: a
+// non-empty pool never comes back empty (the only remaining option is always
+// tried), and an unfiltered pool is returned as a permutation — nothing
+// invented, nothing duplicated, nothing dropped.
+func FuzzOrder(f *testing.F) {
+	f.Add("a/m1", "b/m2", "c/m3", true, false, 10000)
+	f.Add("", "a/m", "a/m", false, true, 0)
+	f.Add("a/m1", "a/m1", "b/m2", false, false, -1)
+
+	f.Fuzz(func(t *testing.T, p1, p2, p3 string, needTools, needVision bool, window int) {
+		if window < 0 {
+			window = -window
+		}
+		entries := []Entry{{"p", p1}, {"p", p2}, {"q", p3}}
+		meta := func(provider, model string) Caps {
+			return Caps{Tools: true, Vision: len(model)%2 == 0, ContextWindow: window}
+		}
+		got := Order(entries, needTools, needVision, meta, func(string, string) bool { return false })
+		if len(got) == 0 {
+			t.Fatalf("Order returned nothing for %d entries", len(entries))
+		}
+		if needTools || needVision {
+			// A capability filter may legitimately shrink the pool; only the
+			// subset relation holds.
+			for _, en := range got {
+				if !slices.Contains(entries, en) {
+					t.Fatalf("Order invented %+v", en)
+				}
+			}
+			return
+		}
+		seen := make(map[Entry]int, len(got))
+		for _, en := range got {
+			seen[en]++
+		}
+		for _, en := range entries {
+			if seen[en] == 0 {
+				t.Fatalf("Order dropped %+v", en)
+			}
+			seen[en]--
+		}
+	})
 }

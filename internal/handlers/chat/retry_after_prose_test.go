@@ -41,3 +41,23 @@ func TestProseRetryRejectsNonPositive(t *testing.T) {
 		t.Errorf("expected no duration for retry in 0s, got %v", d)
 	}
 }
+
+// FuzzProseRetryDelay keeps the prose parser total: any byte string yields
+// either no delay or a delay inside the clamp window extractResetDuration
+// promises, never a panic.
+func FuzzProseRetryDelay(f *testing.F) {
+	f.Add([]byte(`{"error":{"message":"rate limited, retry in 30s"}}`))
+	f.Add([]byte("retry after 1.5s"))
+	f.Add([]byte("retry in 999999 min"))
+	f.Add([]byte{0x00, 0xff, 0x7f})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		d, ok := proseRetryDelay(body)
+		if !ok {
+			return
+		}
+		if d < minResetCooldown || d > maxResetCooldown {
+			t.Fatalf("delay %s outside [%s, %s]", d, minResetCooldown, maxResetCooldown)
+		}
+	})
+}

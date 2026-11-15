@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 
 	json "encoding/json/v2"
@@ -52,6 +53,32 @@ func TestStripStrictUpstreamFields(t *testing.T) {
 		body := []byte(`{"preserve_thinking":`)
 		if out := stripStrictUpstreamFields(body); !bytes.Equal(out, body) {
 			t.Errorf("invalid body rewritten: %s", out)
+		}
+	})
+}
+
+// FuzzStripStrictUpstreamFields keeps the sanitiser total: unparseable bodies
+// come back byte-identical, and a sanitised body always parses and carries
+// none of the dropped fields.
+func FuzzStripStrictUpstreamFields(f *testing.F) {
+	f.Add([]byte(`{"messages":[{"role":"developer","content":"x"}],"enable_thinking":true}`))
+	f.Add([]byte(`{"messages":[]}`))
+	f.Add([]byte(`not json`))
+	f.Add([]byte{0x7b, 0x00})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		out := stripStrictUpstreamFields(body)
+		if slices.Equal(out, body) {
+			return
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("sanitised body is not JSON: %v", err)
+		}
+		for _, name := range strictUpstreamDroppedFields {
+			if _, ok := parsed[name]; ok {
+				t.Fatalf("field %q survived sanitising", name)
+			}
 		}
 	})
 }
