@@ -1752,7 +1752,10 @@ func extractErrorText(body []byte) string {
 }
 
 var (
-	resetsInRegex           = regexp.MustCompile(`(?i)resets?\s+in\s+([0-9hms\.]+)`)
+	resetsInRegex = regexp.MustCompile(`(?i)resets?\s+in\s+([0-9hms\.]+)`)
+	// proseRetryRegex catches the "please retry in 30s" shape several free
+	// gateways answer with, which resetsInRegex ("resets in ...") never sees.
+	proseRetryRegex         = regexp.MustCompile(`(?i)retry\s+(?:after|in)\s+(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?)\b`)
 	codebuddyResetDateRegex = regexp.MustCompile(`(?i)(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})(?:\s*UTC\+?([0-9:]+))?`)
 )
 
@@ -1806,6 +1809,9 @@ func extractResetDuration(body []byte) (time.Duration, bool) {
 			return clampResetDuration(dur), true
 		}
 	}
+	if d, ok := proseRetryDelay(body); ok {
+		return d, true
+	}
 
 	// 3. CodeBuddy date-time pattern (e.g. 2026-09-28 14:30:00 or with UTC offset)
 	if matches := codebuddyResetDateRegex.FindSubmatch(body); len(matches) > 2 {
@@ -1833,6 +1839,30 @@ func extractResetDuration(body []byte) (time.Duration, bool) {
 	}
 
 	return 0, false
+}
+
+// proseRetryDelay reads a human "retry after|in N unit" sentence. Returns the
+// delay clamped by clampResetDuration.
+func proseRetryDelay(body []byte) (time.Duration, bool) {
+	m := proseRetryRegex.FindSubmatch(body)
+	if len(m) < 3 {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	unit := strings.ToLower(string(m[2]))
+	var d time.Duration
+	switch {
+	case unit == "ms":
+		d = time.Duration(n * float64(time.Millisecond))
+	case strings.HasPrefix(unit, "m"):
+		d = time.Duration(n * float64(time.Minute))
+	default:
+		d = time.Duration(n * float64(time.Second))
+	}
+	return clampResetDuration(d), true
 }
 
 func clampResetDuration(dur time.Duration) time.Duration {
