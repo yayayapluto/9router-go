@@ -109,6 +109,53 @@ func renameMaxTokensBody(body []byte) []byte {
 	return out
 }
 
+// strictUpstreamDroppedFields are the vLLM/OMP thinking controls a strict
+// OpenAI-compatible gateway answers 400 on (bansos sanitizeChatBody).
+var strictUpstreamDroppedFields = []string{"preserve_thinking", "chat_template_kwargs", "enable_thinking"}
+
+// stripStrictUpstreamFields removes the strict upstream's unsupported controls,
+// drops the `thought` alias, and rewrites role "developer" to "system". It
+// keeps reasoning_content untouched: DeepSeek 400s when a tool-call turn
+// arrives without it. A body that does not parse as a JSON object returns
+// unchanged.
+func stripStrictUpstreamFields(body []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	changed := false
+	for _, name := range strictUpstreamDroppedFields {
+		if _, ok := m[name]; ok {
+			delete(m, name)
+			changed = true
+		}
+	}
+	if messages, ok := m["messages"].([]any); ok {
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := msg["thought"]; ok {
+				delete(msg, "thought")
+				changed = true
+			}
+			if role, _ := msg["role"].(string); role == "developer" {
+				msg["role"] = "system"
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := marshalStable(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // volcengineArkGLM5OutputCeiling is Volcengine Ark's output-token ceiling for
 // GLM-5 models. Ark answers HTTP 400 for a GLM-5 request that asks for more
 // than this, so a client budget above it is folded down before dispatch.
@@ -290,6 +337,9 @@ func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
 	}
 	if req.Provider == "groq" {
 		req.Body = normalizeGroqGPTOSSRequest(req.Body)
+	}
+	if req.Provider == "ovh" {
+		req.Body = stripStrictUpstreamFields(req.Body)
 	}
 	if req.Provider == "volcengine-ark" {
 		// Volcengine Ark answers HTTP 400 when a GLM-5 model is asked for more

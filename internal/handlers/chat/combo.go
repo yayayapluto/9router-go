@@ -20,6 +20,7 @@ import (
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
 	internalproxy "9router/proxy/internal/proxy"
+	"9router/proxy/internal/routing/freepool"
 	"9router/proxy/internal/tokensaver"
 	"9router/proxy/internal/translator"
 )
@@ -441,6 +442,42 @@ func capabilityTier(modelEntry string, hard, soft []string) int {
 		}
 	}
 	return 0
+}
+
+// orderFreePool orders a free-tier combo's members for one request: capability
+// filters first, then parked models skipped, then bansos's cross-upstream
+// preference (reasoning parity, context at least 90%% of the origin, closest
+// context, largest output). See internal/routing/freepool.
+func (h *ChatHandler) orderFreePool(models []string, body []byte) []string {
+	entries := make([]freepool.Entry, 0, len(models))
+	for _, m := range models {
+		provider, model, ok := strings.Cut(m, "/")
+		if !ok || provider == "" || model == "" {
+			continue
+		}
+		// Combo members are written with the provider alias ("oc/…"), while the
+		// failure loop parks under the canonical id. Parking and ordering must
+		// agree on one spelling or a parked model is dialled again.
+		entries = append(entries, freepool.Entry{Provider: providers.ResolveAlias(provider), Model: model})
+	}
+	if len(entries) <= 1 {
+		return models
+	}
+	required := DetectRequiredCapabilities(body)
+	meta := func(provider, model string) freepool.Caps {
+		caps := providers.GetCapabilitiesForModel(provider, model)
+		ctxWindow, maxOut := providers.GetModelTokenLimits(model)
+		return freepool.Caps{
+			Reasoning: caps.Reasoning, Tools: caps.Tools, Vision: caps.Vision,
+			ContextWindow: ctxWindow, MaxOutput: maxOut,
+		}
+	}
+	ordered := freepool.Order(entries, required["tools"], required["vision"], meta, freepool.Default().Parked)
+	out := make([]string, 0, len(ordered))
+	for _, e := range ordered {
+		out = append(out, e.Provider+"/"+e.Model)
+	}
+	return out
 }
 
 // modelEntryCaps resolves the capability block for a "provider/model" entry.
@@ -969,7 +1006,12 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 	// respectively), so honoring stored order would defeat the evaluation they
 	// exist to perform.
 	var models []string
-	if strategy == "smart" {
+	if strategy == "free" {
+		// The free pool orders itself: capability filters, parked models, and
+		// the cross-upstream preference live in freepool. It must branch before
+		// the strategy fallback, which only knows the rotation strategies.
+		models = h.orderFreePool(comboModels, body)
+	} else if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, body, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
@@ -1041,7 +1083,6 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 				}
 				continue
 			}
-
 
 			candidateCtx := ctx
 			var seatBudgetMs int
@@ -1264,6 +1305,10 @@ func (h *ChatHandler) handleComboFallbackWithVisited(ctx context.Context, cw *co
 						errors.As(fwdErr, &refusedErr)
 						if refusedErr != nil {
 							lastErr = refusedErr
+							// A provider at its capacity is exactly the "not
+							// now" answer the free pool parks on; without this
+							// the exhausted free lane is redialled every turn.
+							h.parkFreeModel(modelInfo.Provider, modelInfo.Model, refusedErr)
 						}
 						if isKnownNoAuth {
 							break
@@ -1498,7 +1543,9 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 	var excludeIDs []string
 	var models []string
 	// smart, tokenmaxxing, and cascade compute dynamic rankings and override stored order.
-	if strategy == "smart" {
+	if strategy == "free" {
+		models = h.orderFreePool(comboModels, bodyJSON)
+	} else if strategy == "smart" {
 		ctx, models = h.applySmartRouting(ctx, bodyJSON, comboModels, comboName)
 	} else if strategy == "tokenmaxxing" {
 		models = h.applyTokenmaxxingRouting(ctx, comboModels)
@@ -1560,7 +1607,6 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 				}
 				continue
 			}
-
 
 			candidateCtx := ctx
 			candidateWriter := http.ResponseWriter(cw)
@@ -1756,6 +1802,10 @@ func (h *ChatHandler) handleMessagesComboFallbackWithVisited(ctx context.Context
 						errors.As(fwdErr, &refusedErr)
 						if refusedErr != nil {
 							lastErr = refusedErr
+							// A provider at its capacity is exactly the "not
+							// now" answer the free pool parks on; without this
+							// the exhausted free lane is redialled every turn.
+							h.parkFreeModel(modelInfo.Provider, modelInfo.Model, refusedErr)
 						}
 						if isKnownNoAuth {
 							break
@@ -1944,6 +1994,45 @@ func entryExcludes(excludeIDs, tried []string) []string {
 	return append(slices.Clip(excludeIDs), tried...)
 }
 
+// parkFreeModel records the wait the free pool owes after this failure. The
+// provider id is canonicalised because combo members are written with the
+// alias and the orderer must look the entry up under the same key.
+func (h *ChatHandler) parkFreeModel(provider, model string, ue *upstreamError) {
+	if d := freeParkDuration(ue); d > 0 {
+		freepool.Default().Park(providers.ResolveAlias(provider), model, d)
+	}
+}
+
+// freeParkDuration maps a retryable upstream failure onto how long the free
+// pool should skip that model. 401/403 is an egress/policy refusal and gets 30
+// minutes; 429 waits what the upstream announced (or a minute), clamped to
+// [1s, 15m]; 5xx gets a minute. Anything else parks nothing.
+func freeParkDuration(ue *upstreamError) time.Duration {
+	if ue == nil {
+		return 0
+	}
+	switch {
+	case ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusForbidden:
+		return 30 * time.Minute
+	case ue.StatusCode == http.StatusTooManyRequests:
+		d, ok := retryAfterWait(ue)
+		if !ok {
+			d = time.Minute
+		}
+		if d < time.Second {
+			return time.Second
+		}
+		if d > 15*time.Minute {
+			return 15 * time.Minute
+		}
+		return d
+	case ue.StatusCode >= 500 && ue.StatusCode <= 504:
+		return time.Minute
+	default:
+		return 0
+	}
+}
+
 // comboLockRetryable classifies a retryable upstream error in a combo loop and
 // locks the failed connection+model so the exponential backoff persists across
 // requests. The combo path iterates tryForwardWithConnection directly and used
@@ -1956,6 +2045,10 @@ func (h *ChatHandler) comboLockRetryable(ctx context.Context, excludeIDs *[]stri
 		*excludeIDs = append(*excludeIDs, connID)
 		return
 	}
+	// Keyless providers have no connection row, so the per-connection lock above
+	// never applies to them. Park the model in the pool store for every error
+	// that says "not now", independent of whether a row exists.
+	h.parkFreeModel(provider, model, ue)
 	if connID == "" {
 		return
 	}

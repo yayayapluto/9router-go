@@ -2,11 +2,13 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"9router/proxy/internal/db"
@@ -26,6 +28,28 @@ func seedConnection(t *testing.T, db *sql.DB, provider string) {
 	); err != nil {
 		t.Fatalf("seed connection: %v", err)
 	}
+}
+
+// stubFreeCatalog keeps the auto-free rebuild offline: every keyless provider
+// then falls back to its static registry list.
+func stubFreeCatalog(t *testing.T) {
+	t.Helper()
+	prev := freeCatalogFetch
+	freeCatalogFetch = func(context.Context, *http.Client, string) []string { return nil }
+	t.Cleanup(func() { freeCatalogFetch = prev })
+}
+
+// useProviderRegistry narrows ProviderRegistry to ids for one test, so the
+// keyless-provider sweep does not add models the test is not about.
+func useProviderRegistry(t *testing.T, ids ...string) {
+	t.Helper()
+	prev := providers.ProviderRegistry
+	next := make(map[string]providers.ProviderMeta, len(ids))
+	for _, id := range ids {
+		next[id] = prev[id]
+	}
+	providers.ProviderRegistry = next
+	t.Cleanup(func() { providers.ProviderRegistry = prev })
 }
 
 func postJSON(t *testing.T, router interface {
@@ -56,9 +80,11 @@ func TestAutoFreeComboCreateRebuildAndEdit(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
+	stubFreeCatalog(t)
 
-	// A bazaarlink connection exists: its registry list has exactly one
-	// free-tier model ("auto:free"), which is what the combo must contain.
+	// A bazaarlink connection exists: its registry list has one free-tier
+	// model ("auto:free"), which the combo must contain alongside the models
+	// of the keyless providers, which need no connection at all.
 	const providerID = "bazaarlink"
 	seedConnection(t, repo.RawDB(), providerID)
 
@@ -71,11 +97,17 @@ func TestAutoFreeComboCreateRebuildAndEdit(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	models, _ := created["models"].([]any)
-	if len(models) != 1 {
-		t.Fatalf("expected 1 free model, got %v", models)
+	if !slices.Contains(models, any("bzl/auto:free")) {
+		t.Errorf("expected bzl/auto:free in %v", models)
 	}
-	if got := models[0]; got != "bzl/auto:free" {
-		t.Errorf("expected bzl/auto:free, got %v", got)
+	if !slices.ContainsFunc(models, func(m any) bool {
+		s, _ := m.(string)
+		return strings.HasPrefix(s, "ovh/")
+	}) {
+		t.Errorf("expected a keyless ovh/ member in %v", models)
+	}
+	if got := mustCombo(t, repo, AutoFreeComboID).Strategy; got != "free" {
+		t.Errorf("auto-free combo strategy = %q, want free", got)
 	}
 
 	// A generated combo is an ordinary row: renaming it must succeed, because
@@ -147,8 +179,14 @@ func TestAutoFreeComboCreateRebuildAndEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("comboModels after rebuild: %v", err)
 	}
-	if len(members) != 1 || members[0] != "bzl/auto:free" {
-		t.Errorf("rebuild must restore the registry model set, got %v", members)
+	if !slices.Contains(members, "bzl/auto:free") {
+		t.Errorf("rebuild must restore the connected free-tier model, got %v", members)
+	}
+	if !slices.ContainsFunc(members, func(m string) bool { return strings.HasPrefix(m, "ovh/") }) {
+		t.Errorf("rebuild must restore the keyless models, got %v", members)
+	}
+	if rebuilt.Strategy != "free" {
+		t.Errorf("rebuild must restore the free strategy, got %q", rebuilt.Strategy)
 	}
 }
 
@@ -168,6 +206,10 @@ func TestAutoFreeComboEmptyWithoutConnections(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
+	stubFreeCatalog(t)
+	// Narrowed to a provider that is neither connected nor keyless: the
+	// keyless sweep would otherwise supply models with no connection at all.
+	useProviderRegistry(t, "openrouter")
 
 	rec := postJSON(t, router, "/api/combos/auto-free", nil)
 	if rec.Code != http.StatusConflict {
@@ -179,6 +221,8 @@ func TestAutoFreeComboExcludesNonChatFreeModels(t *testing.T) {
 	repo, cleanup := setupTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
+	stubFreeCatalog(t)
+	useProviderRegistry(t, "openrouter", "bazaarlink")
 
 	// ":free" is a naming convention, not a service kind. openrouter's only
 	// free-suffixed registry model is the embedding one

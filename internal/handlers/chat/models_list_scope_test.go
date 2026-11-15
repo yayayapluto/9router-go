@@ -166,8 +166,16 @@ func TestHandleModels_ConnectedModeIncludesActiveConnections(t *testing.T) {
 	if !strings.Contains(joined, "kr/") {
 		t.Errorf("expected connected kiro models, got:\n%s", firstLines(joined, 20))
 	}
-	if strings.Contains(joined, "nvidia/") || strings.Contains(joined, "nv/") {
-		t.Errorf("connected mode leaked an unconnected provider:\n%s", firstLines(joined, 20))
+	// Probe the provider prefix, not a substring: a keyless provider's model
+	// ids legitimately carry upstream namespaces ("kilo-free/nvidia/...").
+	for _, m := range connected.Data {
+		prefix := m.ID
+		if idx := strings.Index(m.ID, "/"); idx >= 0 {
+			prefix = m.ID[:idx]
+		}
+		if prefix == "nvidia" || prefix == "nv" {
+			t.Errorf("connected mode leaked an unconnected provider: %q", m.ID)
+		}
 	}
 }
 
