@@ -48,7 +48,7 @@ func ClassifyUpstreamNetworkError(err error) (int, string, string) {
 	if errors.As(err, &dnsErr) {
 		return http.StatusBadGateway, "UPSTREAM_UNREACHABLE", "DNS lookup failed - invalid domain or network issue"
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+	if isConnRefused(err) {
 		return http.StatusBadGateway, "UPSTREAM_UNREACHABLE", "Connection refused - provider node offline or unreachable"
 	}
 	var certErr *tls.CertificateVerificationError
@@ -57,6 +57,20 @@ func ClassifyUpstreamNetworkError(err error) (int, string, string) {
 	}
 	// Fallback for general network or system error
 	return http.StatusBadGateway, "UPSTREAM_UNREACHABLE", err.Error()
+}
+
+// isConnRefused reports a refused or reset connection. The POSIX comparison is
+// not enough on Windows, where the errno a dial returns does not equal
+// syscall.ECONNREFUSED; platformConnRefused carries that half.
+func isConnRefused(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return platformConnRefused(uintptr(errno))
+	}
+	return false
 }
 
 // validateProbeTimeout mirrors upstream's AbortSignal.timeout(8000) on probes.
