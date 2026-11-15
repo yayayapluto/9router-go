@@ -72,14 +72,26 @@ dir rather than `SYSTEM`'s.
 Running `9router-go` with no arguments in a terminal opens a menu:
 
 ```text
-1) Start the gateway
-2) Start in the background
-3) Show status
-4) Stop
-5) Show status
-6) Run in the background with a tray icon (frees the terminal)
-0) Exit
+START
+  1) Open the dashboard        (starts the server if it is stopped)
+  2) Run in the background     (survives this window closing)
+  3) Run in this terminal      (logs stay here; blocks the menu)
+
+MANAGE
+  4) Stop the background server
+  5) Show status and log paths
+  6) Background with tray icon (falls back to 2 when the tray binary is missing)
 ```
+
+The panel at the top answers "is it up?" before anything else: a green mark and
+the pid mean running, a dim mark means stopped. Actions return to the menu so
+the next step is one key away; `3` is the exception because the foreground
+server owns the terminal. `Enter` takes the default (`1`), `q` or `0` leaves,
+and anything else re-prompts instead of quitting. The first-run line under the
+menu only appears while the server is stopped. Colour and box drawing are
+dropped automatically when the terminal cannot render them (`NO_COLOR`,
+`TERM=dumb`, a non-console stdout, or a Windows console outside code page
+65001).
 
 **Option 6 — tray.** The tray icon lives in a companion binary
 (`cmd/9router-tray`), not the main one: a GUI toolkit cannot be linked into the
