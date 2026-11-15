@@ -1630,6 +1630,17 @@ export const api = {
       `/api/providers/${encodeURIComponent(connectionId)}/models`,
     ),
 
+  /**
+   * List models straight from a custom node's base URL.
+   *
+   * A keyless node has no connection row, so this is the only catalogue route
+   * that can answer for it; it derives the same /models URL the chat path uses.
+   */
+  getProviderNodeModels: (nodeId: string) =>
+    request<{ provider: string; models: Array<{ id?: string; name?: string; model?: string } | string> }>(
+      `/api/provider-nodes/${encodeURIComponent(nodeId)}/models`,
+    ),
+
   // Combos
   getCombos: async () => {
     const res = await request<any>('/api/combos')

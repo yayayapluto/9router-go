@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"syscall"
 
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -120,6 +119,68 @@ func (h *DashboardHandler) HandleGetProviderNodes(w http.ResponseWriter, r *http
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"nodes": res,
+	})
+}
+
+// HandleGetProviderNodeModels handles GET /api/provider-nodes/{id}/models.
+//
+// The dashboard's "Import from /models" used to ask a *connection*, so a keyless
+// node — a local Bansos box, say — had nothing to ask and the button stayed
+// disabled. The catalogue lives on the node's own base URL, and it is derived
+// with the same helper the chat path uses, so an import can never disagree with
+// where traffic actually goes.
+func (h *DashboardHandler) HandleGetProviderNodeModels(w http.ResponseWriter, r *http.Request) {
+	id := getURLParam(r, "id")
+	if id == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing provider node id")
+		return
+	}
+	_, node, err := h.Repo.GetProviderNodeByID(id)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if node == nil {
+		handlerutil.WriteJSONError(w, http.StatusNotFound, "provider node not found")
+		return
+	}
+	base := strings.TrimSpace(node.BaseURL)
+	if base == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "no base URL configured for this provider node")
+		return
+	}
+	listURL := chat.CompatibleNodeModelsURL(base)
+	status, body, err := validateProbeDo(
+		r.Context(), http.MethodGet, listURL,
+		map[string]string{"Accept": "application/json"}, nil,
+	)
+	if err != nil {
+		statusCode, _, errMsg := ClassifyUpstreamNetworkError(err)
+		handlerutil.WriteJSONError(w, statusCode, "failed to fetch models: "+errMsg)
+		return
+	}
+	if status != http.StatusOK {
+		handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %s", http.StatusText(status)))
+		return
+	}
+	var parsed struct {
+		Data   []any `json:"data"`
+		Models []any `json:"models"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid models response")
+		return
+	}
+	list := parsed.Data
+	if list == nil {
+		list = parsed.Models
+	}
+	if list == nil {
+		list = []any{}
+	}
+	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"provider": id,
+		"models":   list,
 	})
 }
 
@@ -793,7 +854,7 @@ func validateNodeNetworkMessage(err error) string {
 	if errors.As(err, &dnsErr) {
 		return "DNS lookup failed - invalid domain or network issue"
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+	if isConnRefused(err) {
 		return "Connection refused - provider node offline or unreachable"
 	}
 	var certErr *tls.CertificateVerificationError

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,8 +42,9 @@ func runMenu(cCtx *cli.Context) error {
 	}
 	first := true
 	var err error
+	var last outcome
 	for {
-		fmt.Print(menuText(st))
+		fmt.Print(menuText(st, last))
 		line, ok := readChoice(in)
 		if !ok {
 			// The read ended at EOF before a byte arrived, so there is nobody
@@ -59,12 +61,13 @@ func runMenu(cCtx *cli.Context) error {
 		}
 		first = false
 		choice := parseChoice(line)
-		switch choice {
-		case "":
+		if choice == "" {
 			// Not one of the keys: say so and redraw. Losing the menu to a
 			// typo is the behaviour this loop exists to avoid.
-			fmt.Printf("  %s not an option: type 0-6, q to leave\n", st.paint("31", "!"))
+			last = outcome{lines: []string{"not an option: type 0-6, q to leave"}, failed: true}
 			continue
+		}
+		switch choice {
 		case "0":
 			return nil
 		case "3":
@@ -72,25 +75,41 @@ func runMenu(cCtx *cli.Context) error {
 			// is the one action that does not come back to the menu.
 			return runServer(cCtx)
 		case "1":
-			err = openDashboard(cCtx)
+			last, err = runAction(cCtx, openDashboard)
 		case "2":
-			err = startDetached(cCtx)
+			last, err = runAction(cCtx, startDetached)
 		case "4":
-			err = stopDetached(cCtx)
+			last, err = runAction(cCtx, stopDetached)
 		case "5":
-			err = statusDetached(cCtx)
+			last, err = runAction(cCtx, statusDetached)
 		case "6":
-			err = startTray(cCtx)
+			last, err = runAction(cCtx, startTray)
 		}
 		// Every other action comes back here so the next step is one key
 		// away: the menu is a control surface, not a launcher that quits after
-		// a single pick. Failures are reported and the menu redraws instead of
-		// taking the terminal down with them. The redraw supplies its own
-		// leading blank line, so the separator is not printed twice.
+		// a single pick. The action's report becomes part of the redrawn
+		// screen, so nothing scrolls away and the menu never stacks a second
+		// copy of itself under the first.
 		if err != nil {
-			fmt.Printf("  %s %v\n", st.paint("31", "!"), err)
+			last = outcome{lines: append(last.lines, err.Error()), failed: true}
 		}
 	}
+}
+
+// runAction runs one menu action with its report captured, so the caller can
+// put the answer on the redrawn screen instead of letting it scroll past.
+func runAction(cCtx *cli.Context, action func(*cli.Context) error) (outcome, error) {
+	var buf bytes.Buffer
+	menuOut = &buf
+	err := action(cCtx)
+	menuOut = os.Stdout
+	out := outcome{failed: err != nil}
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			out.lines = append(out.lines, line)
+		}
+	}
+	return out, err
 }
 
 // readChoice blocks for one line. ok is false when the stream ended without
@@ -106,8 +125,6 @@ func readChoice(in *bufio.Reader) (line string, ok bool) {
 	return line, line != ""
 }
 
-// parseChoice maps the typed line to a menu key. Enter alone takes the
-// default (open dashboard); anything unrecognised exits rather than looping.
 // parseChoice maps one typed line to an action key. "" means "not an option":
 // the caller re-prompts instead of quitting, so a fat finger does not close the
 // menu. Escape sequences from arrow or function keys are stripped first, since
@@ -184,7 +201,7 @@ func startTray(cCtx *cli.Context) error {
 		}
 	}
 	if _, err := os.Stat(exe); err != nil {
-		fmt.Printf("tray companion %s not found; falling back to the background server.\n", filepath.Base(exe))
+		fmt.Fprintf(menuOut, "tray companion %s not found; falling back to the background server.\n", filepath.Base(exe))
 		return startDetached(cCtx)
 	}
 	// CommandContext with a context that is never cancelled, not a deadline:
@@ -198,7 +215,7 @@ func startTray(cCtx *cli.Context) error {
 	// Releasing lets the tray outlive this terminal, the same reason the
 	// background daemon is released rather than waited on.
 	_ = cmd.Process.Release()
-	fmt.Printf("Tray started. Right-click the icon to open the dashboard or quit.\n")
+	fmt.Fprintln(menuOut, "Tray started. Right-click the icon to open the dashboard or quit.")
 	return nil
 }
 
@@ -236,7 +253,7 @@ func openDashboard(cCtx *cli.Context) error {
 			target = res.URL
 		}
 	}
-	fmt.Printf("Opening %s\n", target)
+	fmt.Fprintf(menuOut, "Opening %s\n", target)
 	return openInBrowser(cCtx.Context, target)
 }
 

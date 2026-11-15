@@ -347,6 +347,9 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo, chatH *chat.ChatHandler) 
 	r.Put("/api/provider-nodes/{id}", dashH.HandleUpdateProviderNode)
 	r.Delete("/api/provider-nodes/{id}", dashH.HandleDeleteProviderNode)
 	r.Post("/api/provider-nodes/validate", dashH.HandleValidateProviderNode)
+	// Node-level catalogue: a keyless node has no connection row to ask, yet its
+	// /models is exactly what the import button needs.
+	r.Get("/api/provider-nodes/{id}/models", dashH.HandleGetProviderNodeModels)
 	// Per-node capacity limits (docs/provider-limits-plan.md). These live here as
 	// well as in dashboard.RegisterRoutes because that table is mounted by tests
 	// only: a route added there alone is reachable in a unit test and 404s on the
